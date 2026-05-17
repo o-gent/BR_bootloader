@@ -172,6 +172,30 @@ public:
     uint32_t firmware_download_offset() const { return fwupdate.offset; }
     void firmware_download_finish() { fwupdate.node_id = 0; }
 
+    /*
+        Override the health / mode / VSSC reported by send_NodeStatus().
+        When `override_active` is true, send_NodeStatus uses these values
+        instead of its defaults and instead of the firmware-update path.
+        Set by callers that need to publish a non-default state (bootloader
+        flagging a flash failure, app reporting degraded sensors, etc.).
+    */
+    void set_node_status_override(uint8_t health, uint8_t mode, uint16_t vssc)
+    {
+        node_status_override_health = health;
+        node_status_override_mode   = mode;
+        node_status_override_vssc   = vssc;
+        node_status_override_active = true;
+    }
+    void clear_node_status_override() { node_status_override_active = false; }
+
+private:
+    bool     node_status_override_active = false;
+    uint8_t  node_status_override_health = 0;
+    uint8_t  node_status_override_mode   = 0;
+    uint16_t node_status_override_vssc   = 0;
+
+public:
+
     // user methods
     void cycle();
     void debug(const char *msg, uint8_t level);

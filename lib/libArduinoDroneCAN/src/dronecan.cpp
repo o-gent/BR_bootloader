@@ -832,20 +832,31 @@ void DroneCAN::send_NodeStatus(void)
     uint8_t buffer[UAVCAN_PROTOCOL_GETNODEINFO_RESPONSE_MAX_SIZE];
 
     node_status.uptime_sec = uptime++;
-    node_status.health = UAVCAN_PROTOCOL_NODESTATUS_HEALTH_OK;
-    node_status.mode = UAVCAN_PROTOCOL_NODESTATUS_MODE_OPERATIONAL;
     node_status.sub_mode = 0;
-    // put whatever you like in here for display in GUI
-    node_status.vendor_specific_status_code = 0;
 
-    /*
-      when doing a firmware update put the size in kbytes in VSSC so
-      the user can see how far it has reached
-     */
-    if (fwupdate.node_id != 0)
+    if (node_status_override_active)
     {
-        node_status.vendor_specific_status_code = fwupdate.offset / 1024;
-        node_status.mode = UAVCAN_PROTOCOL_NODESTATUS_MODE_SOFTWARE_UPDATE;
+        /* Caller-supplied state takes precedence. Used by the bootloader
+           to surface a flash-erase / write failure on the GCS node list. */
+        node_status.health = node_status_override_health;
+        node_status.mode   = node_status_override_mode;
+        node_status.vendor_specific_status_code = node_status_override_vssc;
+    }
+    else
+    {
+        node_status.health = UAVCAN_PROTOCOL_NODESTATUS_HEALTH_OK;
+        node_status.mode = UAVCAN_PROTOCOL_NODESTATUS_MODE_OPERATIONAL;
+        node_status.vendor_specific_status_code = 0;
+
+        /*
+          when doing a firmware update put the size in kbytes in VSSC so
+          the user can see how far it has reached
+         */
+        if (fwupdate.node_id != 0)
+        {
+            node_status.vendor_specific_status_code = fwupdate.offset / 1024;
+            node_status.mode = UAVCAN_PROTOCOL_NODESTATUS_MODE_SOFTWARE_UPDATE;
+        }
     }
 
     uint32_t len = uavcan_protocol_NodeStatus_encode(&node_status, buffer);

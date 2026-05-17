@@ -33,6 +33,11 @@ bool bl_can_update_done(void);
    to decide whether to short-circuit a jump while an update is in flight. */
 bool bl_can_update_in_progress(void);
 
+/* True if any flash operation has failed since the last begin().
+   When set, main() should refuse to jump (the old vector table is still at
+   APP_START and would otherwise look valid) and signal the error visibly. */
+bool bl_can_update_failed(void);
+
 #ifdef __cplusplus
 }
 #endif

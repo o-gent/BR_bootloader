@@ -17,6 +17,7 @@
 #include "board_config.h"
 #include "bootloader_comms.h"
 #include "bootloader_dronecan.h"
+#include "bootloader_flash.h"
 #include "jump.h"
 
 static void clear_bootcom_magic()
@@ -51,5 +52,50 @@ void loop()
 
     if (bl_can_update_done() && app_is_valid(APP_START_ADDRESS)) {
         jump_to_app(APP_START_ADDRESS);
+    }
+
+    /* Visible failure signal: blink the bootloader error code on the LED.
+       Pattern is N short flashes (200 ms on / 200 ms off) followed by a 1 s
+       pause, repeating. The code is the bl_flash_err_t value, so 1 blink ==
+       BL_FLASH_ERR_BEGIN_ERASE, 2 == NOT_STARTED, etc. See bootloader_flash.h
+       for the full mapping. We never jump in this state -- the old vector
+       table is still intact at APP_START and would otherwise look "valid". */
+    if (bl_can_update_failed()) {
+        const uint8_t code = (uint8_t)bootloader_flash_last_error();
+        const uint32_t now = millis();
+        static uint32_t phase_start;
+        static uint8_t  blinks_done;
+        static bool     led_on;
+        static bool     initialized;
+        if (!initialized) {
+            initialized = true;
+            phase_start = now;
+            blinks_done = 0;
+            led_on = false;
+            digitalWrite(BOOTLOADER_LED_PIN, LOW);
+        }
+        const uint32_t in_phase = now - phase_start;
+
+        if (blinks_done < code) {
+            /* mid-pattern: 200 ms on, 200 ms off */
+            if (in_phase < 200 && !led_on) {
+                led_on = true;
+                digitalWrite(BOOTLOADER_LED_PIN, HIGH);
+            } else if (in_phase >= 200 && in_phase < 400 && led_on) {
+                led_on = false;
+                digitalWrite(BOOTLOADER_LED_PIN, LOW);
+            } else if (in_phase >= 400) {
+                blinks_done++;
+                phase_start = now;
+                led_on = false;
+            }
+        } else {
+            /* pause between pattern repeats */
+            digitalWrite(BOOTLOADER_LED_PIN, LOW);
+            if (in_phase >= 1000) {
+                blinks_done = 0;
+                phase_start = now;
+            }
+        }
     }
 }
