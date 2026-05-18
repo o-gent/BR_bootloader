@@ -188,11 +188,21 @@ public:
     }
     void clear_node_status_override() { node_status_override_active = false; }
 
+    /*
+        Pin toggled at 1 Hz inside cycle() as an "alive" heartbeat. Defaults to
+        pin 19 (MicroNode's on-board LED) for backwards compatibility. Set to
+        -1 to disable -- needed by callers that want to drive the LED with
+        their own state machine (e.g. bootloader update progress / error
+        patterns).
+    */
+    void set_cycle_led_pin(int pin) { cycle_led_pin = pin; }
+
 private:
     bool     node_status_override_active = false;
     uint8_t  node_status_override_health = 0;
     uint8_t  node_status_override_mode   = 0;
     uint16_t node_status_override_vssc   = 0;
+    int      cycle_led_pin = 19;
 
 public:
 

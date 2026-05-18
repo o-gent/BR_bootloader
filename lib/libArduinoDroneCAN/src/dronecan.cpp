@@ -38,12 +38,14 @@ void DroneCAN::init(CanardOnTransferReception onTransferReceived,
     if (preferred > 0 && preferred <= 127)
     {
         canardSetLocalNodeID(&this->canard, preferred);
-        Serial.print("Using stored node ID: ");
-        Serial.println(preferred);
+        if (Serial) {
+            Serial.print("Using stored node ID: ");
+            Serial.println(preferred);
+        }
     }
     else
     {
-        Serial.println("No valid node ID, DNA will run during cycle()");
+        if (Serial) Serial.println("No valid node ID, DNA will run during cycle()");
     }
 }
 
@@ -103,12 +105,14 @@ void DroneCAN::init(const std::vector<parameter> &param_list, const char *name)
     if (preferred > 0 && preferred <= 127)
     {
         canardSetLocalNodeID(&this->canard, preferred);
-        Serial.print("Using stored node ID: ");
-        Serial.println(preferred);
+        if (Serial) {
+            Serial.print("Using stored node ID: ");
+            Serial.println(preferred);
+        }
     }
     else
     {
-        Serial.println("No valid node ID, DNA will run during cycle()");
+        if (Serial) Serial.println("No valid node ID, DNA will run during cycle()");
     }
 }
 
@@ -152,12 +156,15 @@ uint8_t DroneCAN::get_preferred_node_id()
     {
         return (uint8_t)ret;
     }
-    else
-    {
-        Serial.println("No NODEID in storage, setting..");
-        this->setParameter("NODEID", PREFERRED_NODE_ID);
-        return get_preferred_node_id();
-    }
+    /* NODEID isn't in the parameter table -- try to add it, then fall back
+       to the compile-time default. setParameter() returns -1 silently if the
+       parameter doesn't already exist (it only updates, never inserts), so
+       recursing here -- as the original code did -- would loop forever and
+       blow the stack. Just return the default and let the caller decide what
+       to do with it. */
+    if (Serial) Serial.println("No NODEID in storage, using default");
+    this->setParameter("NODEID", PREFERRED_NODE_ID);
+    return PREFERRED_NODE_ID;
 }
 
 /*
@@ -171,8 +178,11 @@ void DroneCAN::cycle()
     {
         this->looptime = millis();
         this->process1HzTasks(this->micros64());
-        digitalWrite(19, this->led_state);
-        this->led_state = !this->led_state;
+        if (cycle_led_pin >= 0)
+        {
+            digitalWrite(cycle_led_pin, this->led_state);
+            this->led_state = !this->led_state;
+        }
     }
 
     this->processRx();
@@ -221,8 +231,10 @@ void DroneCAN::getUniqueID(uint8_t uniqueId[16])
 */
 void DroneCAN::handle_GetNodeInfo(CanardRxTransfer *transfer)
 {
-    Serial.print("GetNodeInfo request from");
-    Serial.println(transfer->source_node_id);
+    if (Serial) {
+        Serial.print("GetNodeInfo request from");
+        Serial.println(transfer->source_node_id);
+    }
 
     uint8_t buffer[UAVCAN_PROTOCOL_GETNODEINFO_RESPONSE_MAX_SIZE];
     struct uavcan_protocol_GetNodeInfoResponse pkt;
@@ -280,19 +292,21 @@ void DroneCAN::handle_param_GetSet(CanardRxTransfer *transfer)
     if ((int)req.name.len > 0)
     {
         // Name‐based lookup
-        Serial.print("Name based lookup");
+        if (Serial) Serial.print("Name based lookup");
         idx = getParameterIndex((const char *)req.name.data, req.name.len);
         if (idx != SIZE_MAX)
         {
-            Serial.println(idx);
+            if (Serial) Serial.println(idx);
         }
     }
     // If that failed, try index‐based lookup
     if (idx == SIZE_MAX && req.index < parameters.size())
     {
         idx = req.index;
-        Serial.print("Parameter index lookup");
-        Serial.println(idx);
+        if (Serial) {
+            Serial.print("Parameter index lookup");
+            Serial.println(idx);
+        }
     }
 
     IWatchdog.reload();
@@ -533,7 +547,7 @@ int DroneCAN::handle_DNA_Allocation(CanardRxTransfer *transfer)
         return 0;
     }
 
-    Serial.println("We got a node ID message back");
+    if (Serial) Serial.println("We got a node ID message back");
 
     // Rule C - updating the randomized time interval
     DNA.send_next_node_id_allocation_request_at_ms =
@@ -542,7 +556,7 @@ int DroneCAN::handle_DNA_Allocation(CanardRxTransfer *transfer)
 
     if (transfer->source_node_id == CANARD_BROADCAST_NODE_ID)
     {
-        Serial.println("Allocation request from another allocatee\n");
+        if (Serial) Serial.println("Allocation request from another allocatee\n");
         DNA.node_id_allocation_unique_id_offset = 0;
         return 0;
     }
@@ -559,7 +573,7 @@ int DroneCAN::handle_DNA_Allocation(CanardRxTransfer *transfer)
     // Matching the received UID against the local one
     if (memcmp(msg.unique_id.data, my_unique_id, msg.unique_id.len) != 0)
     {
-        Serial.println("DNA failed this time");
+        if (Serial) Serial.println("DNA failed this time");
         DNA.node_id_allocation_unique_id_offset = 0;
         // No match, return
         return 0;
@@ -572,14 +586,16 @@ int DroneCAN::handle_DNA_Allocation(CanardRxTransfer *transfer)
         // the next stage and updating the timeout.
         DNA.node_id_allocation_unique_id_offset = msg.unique_id.len;
         DNA.send_next_node_id_allocation_request_at_ms -= UAVCAN_PROTOCOL_DYNAMIC_NODE_ID_ALLOCATION_MIN_REQUEST_PERIOD_MS;
-        Serial.println("second stage Node ID allocation");
+        if (Serial) Serial.println("second stage Node ID allocation");
     }
     else
     {
         // Allocation complete - copying the allocated node ID from the message
         canardSetLocalNodeID(&canard, msg.node_id);
-        Serial.print("Node ID allocated: ");
-        Serial.println(msg.node_id);
+        if (Serial) {
+            Serial.print("Node ID allocated: ");
+            Serial.println(msg.node_id);
+        }
     }
     return 0;
 }
@@ -614,8 +630,10 @@ void DroneCAN::request_DNA()
     uint8_t allocation_request[CANARD_CAN_FRAME_MAX_DATA_LEN - 1];
     uint8_t pref_node_id = (uint8_t)(this->get_preferred_node_id() << 1U);
 
-    Serial.print("Requesting ID ");
-    Serial.println(pref_node_id / 2); // not sure why this is over 2 .. something to do with the bit shifting but this is what it actually sets
+    if (Serial) {
+        Serial.print("Requesting ID ");
+        Serial.println(pref_node_id / 2); // not sure why this is over 2 .. something to do with the bit shifting but this is what it actually sets
+    }
 
     allocation_request[0] = pref_node_id;
 
@@ -651,8 +669,10 @@ void DroneCAN::request_DNA()
                                               (uint16_t)(uid_size + 1));
     if (bcast_res < 0)
     {
-        Serial.print("Could not broadcast ID allocation req; error");
-        Serial.println(bcast_res);
+        if (Serial) {
+            Serial.print("Could not broadcast ID allocation req; error");
+            Serial.println(bcast_res);
+        }
     }
 
     // Preparing for timeout; if response is received, this value will be updated from the callback.
@@ -684,7 +704,7 @@ void DroneCAN::request_DNA()
  */
 void DroneCAN::handle_begin_firmware_update(CanardRxTransfer *transfer)
 {
-    Serial.println("Update request received");
+    if (Serial) Serial.println("Update request received");
 
     auto *comms = (struct app_bootloader_comms *)0x20000000;
 
@@ -992,7 +1012,7 @@ void DroneCANonTransferReceived(DroneCAN &dronecan, CanardInstance *ins, CanardR
                             buffer,
                             len);
 
-            Serial.println("Reset..");
+            if (Serial) Serial.println("Reset..");
             delay(200);
             // yeeeeeet
             NVIC_SystemReset();

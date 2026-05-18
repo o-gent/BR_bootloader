@@ -23,7 +23,15 @@
 extern "C" {
 #endif
 
-void bl_can_start(uint8_t preferred_node_id);
+/*
+ * Bring up CAN and identify on the bus.
+ *   preferred_node_id  -- non-zero to reuse a node ID handed over from the
+ *                         app via BOOTCOM (skips a DNA round-trip).
+ *   iwdg_reset         -- true if previous boot was killed by the watchdog;
+ *                         logged on the startup banner so the operator knows
+ *                         the bootloader is here because the app crashed.
+ */
+void bl_can_start(uint8_t preferred_node_id, bool iwdg_reset);
 void bl_can_cycle(void);
 
 /* True once a download has completed (server returned a short/empty chunk). */

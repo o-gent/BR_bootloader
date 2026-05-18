@@ -25,12 +25,19 @@
 /* 96-bit unique ID base address (per RM0394). */
 #define UDID_BASE           0x1FFF7590UL
 
+/* Node ID claimed by the bootloader when BOOTCOM didn't hand one over
+   (i.e. cold-boot recovery scenarios -- power-cycle after a bricked update).
+   Matches PREFERRED_NODE_ID in libArduinoDroneCAN so the bootloader appears
+   on the bus at the same ID the app would normally use, no DNA needed. */
+#define BL_FALLBACK_NODE_ID 100
+
 #elif defined(CANH7)
 
 /* STM32H7 family (CoreNode / MicroNodePlus) -- filled in during Phase 3. */
 #define APP_START_ADDRESS   0x08020000UL     /* sector 1 boundary on H7 */
 #define BL_FLASH_PAGE_SIZE  0x20000UL        /* 128 KB sectors on H7 */
 #define UDID_BASE           0x1FF1E800UL
+#define BL_FALLBACK_NODE_ID 100
 
 #else
 #error "Define CANL431 or CANH7 for the target MCU."

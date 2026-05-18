@@ -27,6 +27,16 @@ static uint32_t bytes_written;
 static bl_flash_err_t last_err = BL_FLASH_OK;
 static struct bl_flash_diag diag;
 
+/* Deferred vector-table write: we stash the image's first 8 bytes
+   (initial SP + reset_handler) in RAM during streaming, write 0xFF in
+   their place, then commit the real values as the last flash op in
+   finalize(). This makes app_is_valid() return false through the entire
+   download window -- if power is lost at any point before finalize, the
+   next boot stays in the bootloader instead of jumping to a corrupt image
+   whose VT happens to look plausible. */
+static uint8_t  deferred_vt[8];
+static bool     deferred_vt_armed;
+
 /* STM32L4 FLASH peripheral register addresses (RM0394 Table 51). */
 #define BL_FLASH_BASE   0x40022000UL
 #define BL_FLASH_ACR    (*(volatile uint32_t *)(BL_FLASH_BASE + 0x00))
@@ -122,6 +132,8 @@ bool bootloader_flash_begin(void)
     started = false;
     failed = false;
     last_err = BL_FLASH_OK;
+    deferred_vt_armed = false;
+    memset(deferred_vt, 0xFF, sizeof(deferred_vt));
 
     if (!stm32_flash_erasepage(APP_FIRST_PAGE)) {
         capture_diag();
@@ -153,6 +165,17 @@ bool bootloader_flash_write(uint32_t offset, const uint8_t *data, uint16_t len)
     memcpy(buf, pending, pending_len);
     memcpy(buf + pending_len, data, len);
 
+    /* Deferred VT: if this chunk contains the image's first 8 bytes, stash
+       them and substitute 0xFF in the buffer we're about to flash. The
+       offset==0 check is sufficient because writes are strictly append-only
+       (we asserted that via the expected_offset gate above) -- the first 8
+       bytes of the image can only ever be in the very first chunk. */
+    if (!deferred_vt_armed && offset == 0 && total >= 8) {
+        memcpy(deferred_vt, buf, 8);
+        memset(buf, 0xFF, 8);
+        deferred_vt_armed = true;
+    }
+
     uint32_t aligned = total & ~7U;
     uint32_t tail    = total - aligned;
 
@@ -183,6 +206,19 @@ bool bootloader_flash_finalize(void)
         }
         pending_len = 0;
     }
+
+    /* Commit the deferred vector table as the very last operation. Before
+       this write APP_START still reads 0xFFFFFFFF (we wrote 0xFF earlier and
+       L4 flash leaves erased bytes alone) so app_is_valid() returned false.
+       After this write the image is fully consistent and bootable. */
+    if (deferred_vt_armed) {
+        if (!stm32_flash_write(APP_START_ADDRESS, deferred_vt, 8)) {
+            fail(BL_FLASH_ERR_WRITE);
+            return false;
+        }
+        deferred_vt_armed = false;
+    }
+
     bytes_written = (cursor - APP_START_ADDRESS);
     started = false;
     return true;

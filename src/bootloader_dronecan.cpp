@@ -66,6 +66,12 @@ static void handle_begin_firmware_update_server(CanardInstance *ins, CanardRxTra
     g_last_progress_log_kb = 0;
     g_logged_err          = BL_FLASH_OK;
 
+    if (flash_ready) {
+        /* Drop MAINTENANCE override so the lib's SOFTWARE_UPDATE mode +
+           VSSC=KB progress flows through NodeStatus during the download. */
+        g_dronecan.clear_node_status_override();
+    }
+
     if (!flash_ready) {
         bl_logf(LOG_ERROR, "flash begin FAILED err=%u",
                 (unsigned)bootloader_flash_last_error());
@@ -202,22 +208,32 @@ static void canard_dispatch(CanardInstance *ins, CanardRxTransfer *transfer)
     bl_on_transfer_received(ins, transfer);
 }
 
-void bl_can_start(uint8_t preferred_node_id)
+void bl_can_start(uint8_t preferred_node_id, bool iwdg_reset)
 {
     g_dronecan.version_major = 0;
-    g_dronecan.version_minor = 2;  /* Phase 2 */
+    g_dronecan.version_minor = 4;  /* Phase 4 */
 
     g_dronecan.set_firmware_write_callback(bootloader_flash_write_cb);
+    /* Take over the LED so main.cpp can render heartbeat / progress / error
+       patterns without fighting the lib's 1 Hz cycle-toggle. */
+    g_dronecan.set_cycle_led_pin(-1);
 
     g_dronecan.init(canard_dispatch,
                     DroneCANshouldAcceptTransfer,
                     BOOTLOADER_NODE_NAME,
                     preferred_node_id);
 
-    /* One-shot startup banner so we can confirm the bootloader booted cleanly
-       and which node ID it ended up with. */
-    bl_logf(LOG_INFO, "bootloader up, preferred_nid=%u",
-            (unsigned)preferred_node_id);
+    /* Flag the bootloader as "not the app" in the GCS node list as soon as
+       NodeStatus starts going out. Cleared when an update download begins
+       so the lib's SOFTWARE_UPDATE / VSSC-progress reporting takes over. */
+    g_dronecan.set_node_status_override(
+        UAVCAN_PROTOCOL_NODESTATUS_HEALTH_OK,
+        UAVCAN_PROTOCOL_NODESTATUS_MODE_MAINTENANCE,
+        0);
+
+    bl_logf(LOG_INFO, "bootloader up, preferred_nid=%u%s",
+            (unsigned)preferred_node_id,
+            iwdg_reset ? " (after IWDG reset)" : "");
 }
 
 void bl_can_cycle(void)
