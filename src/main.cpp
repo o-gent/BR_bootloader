@@ -164,6 +164,13 @@ void loop()
     bl_can_cycle();
 
     if (bl_can_update_done() && app_is_valid(APP_START_ADDRESS)) {
+        /* Clear BOOTCOM magic before handing control to the freshly-installed
+           app. The BeginFirmwareUpdate handler set magic so a reset mid-update
+           would resume here; now that the update completed cleanly that
+           pending-resume flag must be cleared, otherwise the next NRST press
+           (which preserves RAM on STM32) would re-enter the bootloader from
+           a perfectly healthy app. */
+        clear_bootcom_magic();
         jump_to_app(APP_START_ADDRESS);
     }
 
