@@ -9,6 +9,11 @@
  *   pending_*   -- short tail buffer for sub-aligned chunks
  *   highest_page_erased -- so we erase each app page exactly once
  *   started     -- gate begin() / write() ordering
+ *
+ * Write granule: 32 bytes (256 bits). This is the H7 minimum; L4 only needs
+ * 8 bytes but accepts any 8-byte multiple, so 32-byte alignment is safe for
+ * both. Universal alignment simplifies the code at a cost of up to ~31 bytes
+ * of 0xFF padding at the end of the image.
  */
 /* Page numbers are zero-based from the flash base (0x08000000), so the app
    start needs the flash base subtracted before dividing. The original macro
@@ -16,9 +21,10 @@
    which is why every erase path (lib, raw register, HAL) silently failed. */
 #define APP_FIRST_PAGE  ((APP_START_ADDRESS - 0x08000000UL) / BL_FLASH_PAGE_SIZE)
 #define APP_LAST_PAGE   ((BOARD_FLASH_BYTES / BL_FLASH_PAGE_SIZE) - 1)
+#define BL_WRITE_ALIGN  32U
 
 static uint32_t cursor;
-static uint8_t  pending[8];
+static uint8_t  pending[BL_WRITE_ALIGN];
 static uint8_t  pending_len;
 static uint32_t highest_page_erased;
 static bool     started;
@@ -27,14 +33,22 @@ static uint32_t bytes_written;
 static bl_flash_err_t last_err = BL_FLASH_OK;
 static struct bl_flash_diag diag;
 
-/* Deferred vector-table write: we stash the image's first 8 bytes
-   (initial SP + reset_handler) in RAM during streaming, write 0xFF in
-   their place, then commit the real values as the last flash op in
-   finalize(). This makes app_is_valid() return false through the entire
-   download window -- if power is lost at any point before finalize, the
-   next boot stays in the bootloader instead of jumping to a corrupt image
-   whose VT happens to look plausible. */
-static uint8_t  deferred_vt[8];
+/* Deferred vector-table write. The image's first 8 bytes (initial SP +
+   reset_handler) are what app_is_valid() looks at -- if a power-loss leaves
+   those bytes valid but the rest of the image incomplete, the bootloader
+   would jump to broken code on the next boot.
+ *
+ * We defer the entire first 32-byte write granule (not just 8 bytes), for
+ * two reasons:
+ *   1. On H7, stm32_flash_write rejects re-programming partially-programmed
+ *      memory (check_all_ones gate). If we wrote bytes 8-31 of the image
+ *      during streaming, a later 32-byte write at the same address would
+ *      fail. By deferring all 32 bytes, the first block stays erased (0xFF)
+ *      until finalize.
+ *   2. The L4 write path's skip-if-matched optimization makes writing 0xFF
+ *      to an erased cell a no-op, so this has zero cost on both families.
+ */
+static uint8_t  deferred_vt[BL_WRITE_ALIGN];
 static bool     deferred_vt_armed;
 
 /* STM32L4 FLASH peripheral register addresses (RM0394 Table 51). */
@@ -95,7 +109,7 @@ static bool ensure_page_erased(uint32_t addr)
 
 static bool flush_aligned(const uint8_t *src, uint32_t len)
 {
-    /* len is a multiple of 8 here. Erase any pages we're about to touch. */
+    /* len is a multiple of BL_WRITE_ALIGN here. Erase any pages we're about to touch. */
     uint32_t remaining = len;
     uint32_t addr      = cursor;
     const uint8_t *p   = src;
@@ -106,7 +120,7 @@ static bool flush_aligned(const uint8_t *src, uint32_t len)
         uint32_t page_end   = (addr_to_page(addr) + 1) * BL_FLASH_PAGE_SIZE + 0x08000000UL;
         uint32_t chunk_room = page_end - addr;
         uint32_t chunk      = remaining < chunk_room ? remaining : chunk_room;
-        chunk &= ~7U;
+        chunk &= ~(BL_WRITE_ALIGN - 1U);
         if (chunk == 0) {
             fail(BL_FLASH_ERR_WRITE);
             return false;
@@ -156,7 +170,7 @@ bool bootloader_flash_write(uint32_t offset, const uint8_t *data, uint16_t len)
         fail(BL_FLASH_ERR_OFFSET);
         return false;
     }
-    uint8_t buf[8 + 512];
+    uint8_t buf[BL_WRITE_ALIGN + 512];
     uint32_t total = pending_len + len;
     if (total > sizeof(buf)) {
         fail(BL_FLASH_ERR_OVERFLOW);
@@ -165,18 +179,18 @@ bool bootloader_flash_write(uint32_t offset, const uint8_t *data, uint16_t len)
     memcpy(buf, pending, pending_len);
     memcpy(buf + pending_len, data, len);
 
-    /* Deferred VT: if this chunk contains the image's first 8 bytes, stash
-       them and substitute 0xFF in the buffer we're about to flash. The
-       offset==0 check is sufficient because writes are strictly append-only
-       (we asserted that via the expected_offset gate above) -- the first 8
-       bytes of the image can only ever be in the very first chunk. */
-    if (!deferred_vt_armed && offset == 0 && total >= 8) {
-        memcpy(deferred_vt, buf, 8);
-        memset(buf, 0xFF, 8);
+    /* Deferred VT: if this chunk contains the image's first write-granule,
+       stash the bytes and substitute 0xFF in the buffer we're about to
+       flash. offset==0 is sufficient because writes are strictly append-only
+       (asserted by the expected_offset gate above) -- the first BL_WRITE_ALIGN
+       bytes can only ever appear in the very first chunk. */
+    if (!deferred_vt_armed && offset == 0 && total >= BL_WRITE_ALIGN) {
+        memcpy(deferred_vt, buf, BL_WRITE_ALIGN);
+        memset(buf, 0xFF, BL_WRITE_ALIGN);
         deferred_vt_armed = true;
     }
 
-    uint32_t aligned = total & ~7U;
+    uint32_t aligned = total & ~(BL_WRITE_ALIGN - 1U);
     uint32_t tail    = total - aligned;
 
     if (aligned > 0) {
@@ -198,21 +212,23 @@ bool bootloader_flash_finalize(void)
         return false;
     }
     if (pending_len > 0) {
-        uint8_t padded[8];
+        uint8_t padded[BL_WRITE_ALIGN];
         memset(padded, 0xFF, sizeof(padded));
         memcpy(padded, pending, pending_len);
-        if (!flush_aligned(padded, 8)) {
+        if (!flush_aligned(padded, BL_WRITE_ALIGN)) {
             return false;
         }
         pending_len = 0;
     }
 
     /* Commit the deferred vector table as the very last operation. Before
-       this write APP_START still reads 0xFFFFFFFF (we wrote 0xFF earlier and
-       L4 flash leaves erased bytes alone) so app_is_valid() returned false.
-       After this write the image is fully consistent and bootable. */
+       this write the first BL_WRITE_ALIGN bytes at APP_START are still 0xFF
+       (we wrote 0xFF during streaming; both the L4 and H7 write paths skip
+       the actual program operation when source matches destination, so the
+       erased state survives intact). The real 32-byte write here completes
+       the image and makes app_is_valid() return true on the next boot. */
     if (deferred_vt_armed) {
-        if (!stm32_flash_write(APP_START_ADDRESS, deferred_vt, 8)) {
+        if (!stm32_flash_write(APP_START_ADDRESS, deferred_vt, BL_WRITE_ALIGN)) {
             fail(BL_FLASH_ERR_WRITE);
             return false;
         }
