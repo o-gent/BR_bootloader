@@ -15,9 +15,9 @@ matching `-Bootloader` env:
 
 ```
 cd Arduino-DroneCAN
-pio run -e Micro-Node-Bootloader      -t upload   # MicroNode
-pio run -e Micro-Node-Plus-Bootloader -t upload   # MicroNodePlus
-pio run -e Core-Node-Bootloader       -t upload   # CoreNode
+pio run -e Micro-Node-App      -t upload   # MicroNode
+pio run -e Micro-Node-Plus-App -t upload   # MicroNodePlus
+pio run -e Core-Node-App       -t upload   # CoreNode
 ```
 
 A single ST-Link command flashes both the bootloader and your app at the
